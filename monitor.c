@@ -954,6 +954,9 @@ void do_monitor(struct supertype *container)
 {
 	int rv;
 	int first = 1;
+
+	Name = "monitor";
+
 	do {
 		rv = wait_and_act(container, first);
 		first = 0;
