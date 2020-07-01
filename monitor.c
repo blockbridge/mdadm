@@ -343,6 +343,7 @@ static void signal_manager(void)
 {
 	/* tgkill(getpid(), mon_tid, SIGUSR1); */
 	int pid = getpid();
+	dprintf("sending SIGUSR1 to manager\n");
 	syscall(SYS_tgkill, pid, mgr_tid, SIGUSR1);
 }
 
