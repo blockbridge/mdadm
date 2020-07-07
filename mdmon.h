@@ -81,7 +81,6 @@ int read_dev_state(int fd);
 int is_container_member(struct mdstat_ent *mdstat, char *container);
 
 struct mdstat_ent *mdstat_read(int hold, int start);
-struct mdstat_ent *mdstat_read_ex(int hold, int start, int debug_log); //XXX
 
 extern int exit_now, manager_ready;
 extern int mon_tid, mgr_tid;

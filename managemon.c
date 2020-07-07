@@ -1053,7 +1053,7 @@ void do_manager(struct supertype *container)
 		 * update_queue
 		 */
 		if (update_queue == NULL) {
-			mdstat = mdstat_read_ex(1, 0, 1);
+			mdstat = mdstat_read(1, 0);
 
 			manage(mdstat, container);
 

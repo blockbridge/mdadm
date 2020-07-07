@@ -125,7 +125,7 @@ void free_mdstat(struct mdstat_ent *ms)
 }
 
 static int mdstat_fd = -1;
-struct mdstat_ent *mdstat_read_ex(int hold, int start, int debug_log)
+struct mdstat_ent *mdstat_read(int hold, int start)
 {
 	FILE *f;
 	struct mdstat_ent *all, *rv, **end, **insert_here;
@@ -158,9 +158,6 @@ struct mdstat_ent *mdstat_read_ex(int hold, int start, int debug_log)
 		char devnm[32];
 		int in_devs = 0;
 
-		if (debug_log)
-			dprintf("'%s'\n", line);
-
 		if (strcmp(line, "Personalities")==0)
 			continue;
 		if (strcmp(line, "read_ahead")==0)
@@ -188,8 +185,6 @@ struct mdstat_ent *mdstat_read_ex(int hold, int start, int debug_log)
 		strcpy(ent->devnm, devnm);
 
 		for (w=dl_next(line); w!= line ; w=dl_next(w)) {
-			if (debug_log)
-				dprintf("'%s'\n", w);
 			int l = strlen(w);
 			char *eq;
 			if (strcmp(w, "active")==0)
@@ -295,12 +290,6 @@ struct mdstat_ent *mdstat_read_ex(int hold, int start, int debug_log)
 	} else rv = all;
 	return rv;
 }
-
-struct mdstat_ent *mdstat_read(int hold, int start)
-{
-	return mdstat_read_ex(hold, start, 0);
-}
-
 
 void mdstat_close(void)
 {
