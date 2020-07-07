@@ -2129,7 +2129,7 @@ static int find_index_in_bvd(const struct ddf_super *ddf,
 			j++;
 		}
 	}
-	dprintf("couldn't find BVD member %u (total %u)\n",
+	dprintf("n:%d (couldn't find in BVD) [total %u]\n",
 		n, be16_to_cpu(conf->prim_elmnt_count));
 	return 0;
 }
@@ -3581,7 +3581,7 @@ static int __write_init_super_ddf(struct supertype *st, int *enough_out)
 				desc = "missing";
 
 			dprintf("skipping %s device: "
-				"fd:%d pdnum:%d raiddisk:%d refnum:(%08x) "
+				"fd:%-2d pdnum:%d raiddisk:%d refnum:(%08x) "
 				"state:%u %d:%d\n",
 				desc,
 				d->fd, d->pdnum, d->raiddisk,
@@ -4660,21 +4660,19 @@ static void handle_missing(struct ddf_super *ddf, struct active_array *a, int in
 		if (!vc) {
 			break;
 		}
-		dprintf("handle_missing: phys_refnum %08x\n",
-				be32_to_cpu(vc->phys_refnum[n_bvd]));
 		for (dl = ddf->dlist; dl; dl = dl->next)
 			if (be32_eq(dl->disk.refnum, vc->phys_refnum[n_bvd]))
 				break;
 		if (dl) {
 			/* Found this disk, so not missing */
-			dprintf("handle_missing: disk found %08x\n",
-					be32_to_cpu(dl->disk.refnum));
+			dprintf("(%08x) disk found\n",
+				be32_to_cpu(dl->disk.refnum));
 			continue;
 		}
 
 		/* disk missing */
-		dprintf("handle_missing: disk missing %08x\n",
-				be32_to_cpu(vc->phys_refnum[n_bvd]));
+		dprintf("(%08x) disk missing\n",
+			be32_to_cpu(vc->phys_refnum[n_bvd]));
 
 		/* Mark the device as failed/missing. */
 		pd = find_phys(ddf, vc->phys_refnum[n_bvd]);
@@ -4854,18 +4852,18 @@ ddf_update_state(struct supertype *st)
 	return 0;
 }
 
-static int bvd_op_device_online(const struct ddf_super *ddf, int pd)
+static int bvd_op_device_online(const struct ddf_super *ddf, int pd, int *found)
 {
 	struct dl *d;
 		
 	for (d = ddf->dlist; d; d = d->next) {
 		if (d->pdnum == pd) {
-			dprintf("pd:%d found_refnum:%u\n",
-				pd, be32_to_cpu(d->disk.refnum));
+			*found = 1;
 			return d->op_ok;
 		}
 	}
 
+	*found = 0;
 	return 0;
 }
 
@@ -4882,23 +4880,41 @@ static int get_bvd_state(const struct ddf_super *ddf,
 	layout_ddf2md(vc, &array);
 
 	for (i = 0; i < n_prim; i++) {
-		dprintf("i:%d\n", i);
-		if (!find_index_in_bvd(ddf, vc, i, &n_bvd))
+		if (!find_index_in_bvd(ddf, vc, i, &n_bvd)) {
+			dprintf("i:%d skipped", i);
 			continue;
+		}
 		pd = find_phys(ddf, vc->phys_refnum[n_bvd]);
-		dprintf("i:%d n_bvd:%u phys_refnum:(%08x) pd:%d\n", i, n_bvd,
-			be32_to_cpu(vc->phys_refnum[n_bvd]), pd);
-		if (pd < 0)
+		if (pd < 0) {
+			dprintf("i:%d n_bvd:%u phys_refnum:(%08x) "
+				"pd:%d %s (pd<0)\n", i, n_bvd,
+				be32_to_cpu(vc->phys_refnum[n_bvd]),
+				pd, op_type);
 			continue;
+		}
 
 		if (op_sts) {
-			if (!bvd_op_device_online(ddf, pd)) {
-				dprintf("i:%d pd:%d %s OFFLINE\n", i, pd, op_type);
+			int found = 0;
+			if (!bvd_op_device_online(ddf, pd, &found)) {
+				dprintf("i:%d n_bvd:%u phys_refnum:(%08x) "
+					"pd:%d %s OFFLINE (found:%s)\n", i,
+					n_bvd,
+					be32_to_cpu(vc->phys_refnum[n_bvd]),
+					pd, op_type, found ? "yes" : "no");
 				continue;
 			}
 			else {
-				dprintf("i:%d pd:%d %s online\n", i, pd, op_type);
+				dprintf("i:%d n_bvd:%u phys_refnum:(%08x) "
+					"pd:%d %s online\n", i, n_bvd,
+					be32_to_cpu(vc->phys_refnum[n_bvd]),
+					pd, op_type);
 			}
+		}
+		else {
+			dprintf("i:%d n_bvd:%u phys_refnum:(%08x) "
+				"pd:%d (no op)\n", i, n_bvd,
+				be32_to_cpu(vc->phys_refnum[n_bvd]),
+				pd);
 		}
 
 		st = be16_to_cpu(ddf->phys->entries[pd].state);
@@ -5183,12 +5199,12 @@ static int ddf_probe_device_fd(struct supertype *st, int fd)
 	}
 
 	if (lseek64(fd, lba<<9, 0) < 0) {
-		pr_err("fd:%d lba:0x%llx lseek64 failed: %m\n", fd, lba);
+		pr_err("fd:%-2d lba:0x%llx lseek64 failed: %m\n", fd, lba);
 		goto error;
 	}
 
 	if (read(fd, buf, 512) < 0) {
-		pr_err("fd:%d lba:0x%llx read failed: %m\n", fd, lba);
+		pr_err("fd:%-2d lba:0x%llx read failed: %m\n", fd, lba);
 		goto error;
 	}
 
@@ -5204,22 +5220,15 @@ static int ddf_probe_device(struct supertype *st, struct dl *d)
 	unsigned state = be16_to_cpu(ddf->phys->entries[d->pdnum].state);
 	int fd = d->fd;
 
-	dprintf("fd:%d pdnum:%d refnum:(%08x) "
+	dprintf("fd:%-2d pdnum:%d refnum:(%08x) "
 		"state:%s:%u %d:%d\n",
 		d->fd, d->pdnum,
 		be32_to_cpu(d->disk.refnum),
 		ddf_device_state_str(state),
 		state, d->major, d->minor);
 
-	if ((state & (DDF_Failed|DDF_Rebuilding|DDF_Missing))) {
-		if (state & DDF_Failed)
-			dprintf("fd:%d state:failed\n", fd);
-		else if (state & DDF_Rebuilding)
-			dprintf("fd:%d state:rebuilding\n", fd);
-		else
-			dprintf("fd:%d state:missing\n", fd);
+	if ((state & (DDF_Failed|DDF_Rebuilding|DDF_Missing)))
 		return 0;
-	}
 
 	return ddf_probe_device_fd(st, fd);
 }

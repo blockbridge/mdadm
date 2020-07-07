@@ -136,7 +136,8 @@ static void free_aa(struct active_array *aa)
 	/* Note that this doesn't close fds if they are being used
 	 * by a clone.  ->container will be set for a clone
 	 */
-	dprintf("sys_name: %s\n", aa->info.sys_name);
+	dprintf("sys_name: %s, exit_now:%d, container:%s\n", aa->info.sys_name,
+		exit_now, aa->container ? "yes" : "no");
 	if (!aa->container)
 		close_aa(aa);
 	while (aa->info.devs) {
@@ -178,6 +179,7 @@ static void wakeup_monitor(void)
 {
 	/* tgkill(getpid(), mon_tid, SIGUSR1); */
 	int pid = getpid();
+	dprintf("sending SIGUSR1 to monitor\n");
 	syscall(SYS_tgkill, pid, mon_tid, SIGUSR1);
 }
 
@@ -193,9 +195,10 @@ static void remove_old(void)
 	}
 }
 
-static void replace_array(struct supertype *container,
-			  struct active_array *old,
-			  struct active_array *new)
+static void replace_array_int(struct supertype *container,
+			      struct active_array *old,
+			      struct active_array *new,
+			      const char *function, int line)
 {
 	/* To replace an array, we add it to the top of the list
 	 * marked with ->replaces to point to the original.
@@ -203,6 +206,11 @@ static void replace_array(struct supertype *container,
 	 * and put it on 'discard_this'.  We take it from there
 	 * and discard it.
 	 */
+	dprintf("pending_discard:%s old:%s new:%s func:%s line:%d\n",
+		pending_discard ? pending_discard->info.sys_name : "(none)",
+		old ? old->info.sys_name : "(none)",
+		new ? new->info.sys_name : "(none)",
+		function, line);
 	remove_old();
 	while (pending_discard) {
 		while (discard_this == NULL)
@@ -215,6 +223,9 @@ static void replace_array(struct supertype *container,
 	container->arrays = new;
 	wakeup_monitor();
 }
+
+#define replace_array(CONTAINER, OLD, NEW)				\
+	replace_array_int((CONTAINER), (OLD), (NEW), __FUNCTION__, __LINE__)
 
 struct metadata_update *update_queue = NULL;
 struct metadata_update *update_queue_handled = NULL;
@@ -452,6 +463,11 @@ static void manage_container(struct mdstat_ent *mdstat,
 		struct mdinfo **cdp, *cd, *di, *mdi;
 		int found;
 
+		dprintf("mdstat->active:%d mdstat->devcnt:%d container->devcnt:%d "
+			"sigterm:%d exit_now:%d\n",
+			mdstat->active, mdstat->devcnt, container->devcnt,
+			sigterm, exit_now);
+
 		/* read /sys/block/NAME/md/dev-??/block/dev to find out
 		 * what is there, and compare with container->info.devs
 		 * To see what is removed and what is added.
@@ -461,6 +477,7 @@ static void manage_container(struct mdstat_ent *mdstat,
 		if (!mdi) {
 			/* invalidate the current count so we can try again */
 			container->devcnt = -1;
+			dprintf("failed sysfs_read(GET_DEVS)\n");
 			return;
 		}
 
@@ -941,16 +958,19 @@ static void handle_message(struct supertype *container, struct metadata_update *
 			cnt += 2; /* wait until next pselect */
 		else
 			cnt += 3; /* wait for 2 pselects */
+		dprintf("ping_monitor, monitor_loop_cnt:%d, cnt:%d\n", monitor_loop_cnt, cnt);
 		wakeup_monitor();
 
 		while (monitor_loop_cnt - cnt < 0)
 			usleep(10 * 1000);
 	} else if (msg->len == -1) { /* ping_manager */
+		dprintf("ping_manager\n");
 		struct mdstat_ent *mdstat = mdstat_read(1, 0);
 
 		manage(mdstat, container);
 		free_mdstat(mdstat);
 	} else if (!sigterm) {
+		dprintf("message len:%d\n", msg->len);
 		mu = xmalloc(sizeof(*mu));
 		mu->len = msg->len;
 		mu->buf = msg->buf;
@@ -1024,7 +1044,7 @@ void do_manager(struct supertype *container)
 		 * update_queue
 		 */
 		if (update_queue == NULL) {
-			mdstat = mdstat_read(1, 0);
+			mdstat = mdstat_read_ex(1, 0, 1);
 
 			manage(mdstat, container);
 
