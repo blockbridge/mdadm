@@ -136,7 +136,7 @@ static void free_aa(struct active_array *aa)
 	/* Note that this doesn't close fds if they are being used
 	 * by a clone.  ->container will be set for a clone
 	 */
-	dprintf("sys_name: %s, exit_now:%d\n", aa->info.sys_name, exit_now);
+	dprintf("sys_name: %s\n", aa->info.sys_name);
 	if (!aa->container)
 		close_aa(aa);
 	while (aa->info.devs) {
@@ -178,7 +178,6 @@ static void wakeup_monitor(void)
 {
 	/* tgkill(getpid(), mon_tid, SIGUSR1); */
 	int pid = getpid();
-	dprintf("sending SIGUSR1 to monitor\n");
 	syscall(SYS_tgkill, pid, mon_tid, SIGUSR1);
 }
 
@@ -453,11 +452,6 @@ static void manage_container(struct mdstat_ent *mdstat,
 		struct mdinfo **cdp, *cd, *di, *mdi;
 		int found;
 
-        dprintf("mdstat->active:%d mdstat->devcnt:%d container->devcnt:%d "
-                "sigterm:%d exit_now:%d\n",
-                mdstat->active, mdstat->devcnt, container->devcnt,
-                sigterm, exit_now);
-
 		/* read /sys/block/NAME/md/dev-??/block/dev to find out
 		 * what is there, and compare with container->info.devs
 		 * To see what is removed and what is added.
@@ -467,28 +461,8 @@ static void manage_container(struct mdstat_ent *mdstat,
 		if (!mdi) {
 			/* invalidate the current count so we can try again */
 			container->devcnt = -1;
-			dprintf("failed sysfs_read(GET_DEVS)\n");
 			return;
 		}
-
-		// XXX
-
-		/* check for removals - test loop */
-		for (cdp = &container->devs; *cdp; cdp = &(*cdp)->next) {
-			found = 0;
-			for (di = mdi->devs; di; di = di->next)
-				if (di->disk.major == (*cdp)->disk.major &&
-				    di->disk.minor == (*cdp)->disk.minor) {
-					found = 1;
-					break;
-				}
-			if (!found) {
-				dprintf("[XXX] will remove %d:%d from container\n",
-					(*cdp)->disk.major, (*cdp)->disk.minor);
-			}
-		}
-
-		// XXX
 
 		/* check for removals */
 		for (cdp = &container->devs; *cdp; ) {
@@ -967,19 +941,16 @@ static void handle_message(struct supertype *container, struct metadata_update *
 			cnt += 2; /* wait until next pselect */
 		else
 			cnt += 3; /* wait for 2 pselects */
-		dprintf("ping_monitor, monitor_loop_cnt:%d, cnt:%d\n", monitor_loop_cnt, cnt);
 		wakeup_monitor();
 
 		while (monitor_loop_cnt - cnt < 0)
 			usleep(10 * 1000);
 	} else if (msg->len == -1) { /* ping_manager */
-		dprintf("ping_manager\n");
 		struct mdstat_ent *mdstat = mdstat_read(1, 0);
 
 		manage(mdstat, container);
 		free_mdstat(mdstat);
 	} else if (!sigterm) {
-		dprintf("message len:%d\n", msg->len);
 		mu = xmalloc(sizeof(*mu));
 		mu->len = msg->len;
 		mu->buf = msg->buf;
