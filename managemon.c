@@ -1039,13 +1039,12 @@ void do_manager(struct supertype *container)
 	struct mdstat_ent *mdstat;
 	sigset_t set;
 
+	sigprocmask(SIG_UNBLOCK, NULL, &set);
+	sigdelset(&set, SIGUSR1);
+	sigdelset(&set, SIGTERM);
 	Name = "manager";
 
 	do {
-		sigprocmask(SIG_UNBLOCK, NULL, &set);
-		sigdelset(&set, SIGUSR1);
-		sigdelset(&set, SIGTERM);
-
 		if (exit_now)
 			exit(0);
 
