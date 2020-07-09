@@ -24,6 +24,8 @@
 #include <sys/select.h>
 #include <signal.h>
 
+int array_stopping = 0;
+
 static char *array_states[] = {
 	"clear", "inactive", "suspended", "readonly", "read-auto",
 	"clean", "active", "write-pending", "active-idle", NULL };
@@ -478,6 +480,8 @@ static int read_and_act(struct active_array *a, fd_set *fds)
 	if ((a->curr_state == bad_word || a->curr_state <= inactive) &&
 	    a->prev_state > inactive) {
 		/* array has been stopped */
+		dprintf("ARRAY STOPPED\n");
+		array_stopping = 1;
 		a->container->ss->set_array_state(a, 1);
 		a->next_state = clear;
 		deactivate = 1;
@@ -768,27 +772,34 @@ static void dprint_wake_reasons(fd_set *fds)
 	int i;
 	char proc_path[256];
 	char link[256];
+	char message[1024];
 	char *basename;
 	int rv;
 
-	fprintf(stderr, "monitor: wake ( ");
+	message[0] = '\0';
+	strcpy(message, "monitor: wake ( ");
 	for (i = 0; i < FD_SETSIZE; i++) {
 		if (FD_ISSET(i, fds)) {
+			char tmp[512];
 			sprintf(proc_path, "/proc/%d/fd/%d",
 				(int) getpid(), i);
 
 			rv = readlink(proc_path, link, sizeof(link) - 1);
 			if (rv < 0) {
-				fprintf(stderr, "%d:unknown ", i);
+				snprintf(tmp, sizeof tmp, "%d:unknown ", i);
+				strncat(message, tmp, (sizeof message) - 1);
 				continue;
 			}
 			link[rv] = '\0';
 			basename = strrchr(link, '/');
-			fprintf(stderr, "%d:%s ",
+
+			snprintf(tmp, sizeof tmp, "%d:%s ",
 				i, basename ? ++basename : link);
+			strncat(message, tmp, (sizeof message) - 1);
 		}
 	}
-	fprintf(stderr, ")\n");
+	message[sizeof message - 1] = '\0';
+	fprintf(stderr, "%s)\n", message);
 }
 #endif
 
@@ -810,15 +821,31 @@ static int wait_and_act(struct supertype *container, int nowait)
 		a = *ap;
 		/* once an array has been deactivated we want to
 		 * ask the manager to discard it.
+		 *
+		 * Blockbridge note: **aap is the address of the pointer
+		 * "container->arrays".  While this block of code below deals
+		 * with multiple subarrays, with a single subarray, it ends up
+		 * setting container->arrays = NULL, as a->next is NULL.
 		 */
 		if (!a->container || a->to_remove) {
+			dprintf("flagging subarray '%s' ptr:%p to be "
+				"removed from container; "
+				"container:%s to_remove:%s discard_this:%p\n",
+				a->info.sys_name, a,
+				a->container ? "yes" : "no",
+				a->to_remove ? "yes" : "no",
+				discard_this);
 			if (discard_this) {
 				ap = &(*ap)->next;
 				continue;
 			}
-			*ap = a->next;
+			*ap = a->next; // BB: effectively container->arrays = NULL
 			a->next = NULL;
 			discard_this = a;
+			if (!container->arrays && !array_stopping) {
+				dprintf("ARRAY STOPPED\n");
+				array_stopping = 1;
+			}
 			signal_manager();
 			continue;
 		}
@@ -833,6 +860,17 @@ static int wait_and_act(struct supertype *container, int nowait)
 		}
 
 		ap = &(*ap)->next;
+	}
+
+	// Blockbridge: there shouldn't be a case where array_stopping
+	// is true at this point in the code and there are still
+	// sub-arrays.  If, somehow, this assertion is incorrect, then
+	// clear "array_stopping" and signal the manager, who may be
+	// waiting to enact container membership changes.
+	if (container->arrays && array_stopping) {
+		pr_err("BB_BUG: unexpectedly clearing array_stopping\n");
+		array_stopping = 0;
+		signal_manager();
 	}
 
 	if (manager_ready && (*aap == NULL || (sigterm && !dirty_arrays))) {

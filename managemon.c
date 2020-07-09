@@ -107,6 +107,7 @@
 #include	<sys/syscall.h>
 #include	<sys/socket.h>
 #include	<signal.h>
+#include        <stdbool.h>
 
 static void close_aa(struct active_array *aa)
 {
@@ -459,12 +460,30 @@ static void manage_container(struct mdstat_ent *mdstat,
 	 * FIXME should we look for compatible metadata and take hints
 	 * about spare assignment.... probably not.
 	 */
+
+	// Blockbridge: do not process container membership changes if
+	// the monitor thread has signaled that the sub-array has
+	// stopped, or is in the process of stopping.  The array
+	// membership in /sysfs may be in flux during this time;
+	// do not act.
+	if (array_stopping) {
+		dprintf("array stopping; avoiding container "
+			"membership changes");
+		return;
+	}
+
+	// Blockbridge note: This uses the device counts from
+	// /proc/mdstat when deciding whether to start changing a
+	// container's membersip.  However, it uses the list of
+	// devices read from /sys/block/md<container>/md/dev-* to
+	// determine the exact membership.
+
 	if (mdstat->devcnt != container->devcnt) {
 		struct mdinfo **cdp, *cd, *di, *mdi;
 		int found;
 
-		dprintf("mdstat->active:%d mdstat->devcnt:%d container->devcnt:%d "
-			"sigterm:%d exit_now:%d\n",
+		dprintf("mdstat->active:%d mdstat->devcnt:%d "
+			"container->devcnt:%d sigterm:%d exit_now:%d\n",
 			mdstat->active, mdstat->devcnt, container->devcnt,
 			sigterm, exit_now);
 
@@ -481,8 +500,10 @@ static void manage_container(struct mdstat_ent *mdstat,
 			return;
 		}
 
-		/* check for removals */
-		for (cdp = &container->devs; *cdp; ) {
+		// Blockbridge: do not remove devices from the
+		// container if there's no active subarray.  RFE: this
+		// presumes one subarray per container.
+		for (cdp = &container->devs; *cdp && container->arrays; ) {
 			found = 0;
 			for (di = mdi->devs; di; di = di->next)
 				if (di->disk.major == (*cdp)->disk.major &&
@@ -660,7 +681,8 @@ static void manage_member(struct mdstat_ent *mdstat,
 		a->check_degraded = 0;
 
 		/* The array may not be degraded, this is just a good time
-		 * to check.
+		 * to check.  The remainder of this function is about
+		 * adding the candidate spare "newdev" to the array.
 		 */
 		newdev = container->ss->activate_spare(a, &updates);
 		if (!newdev)
@@ -916,10 +938,31 @@ void manage(struct mdstat_ent *mdstat, struct supertype *container)
 	 * Arrays with the wrong metadata are ignored.
 	 */
 
+	// Blockbridge: first, scan through the mdstat entries to see
+	// if one of them includes a member array for this container.
+	// If none are present, then do not attempt to alter the
+	// container membership.  This last-ditch check prevents
+	// changes to array membership when mdmon is not supposed to
+	// be running, but hasn't figured that out yet.
+	bool member_found = false;
+	struct mdstat_ent *m;
+	for (m = mdstat; m != NULL; m = m->next) {
+		if (is_container_member(m, container->devnm)) {
+			member_found = true;
+			break;
+		}
+	}
+	if (!member_found) {
+		dprintf("active member array for container %s missing "
+			"from /proc/mdstat; not managing container"
+			"array membership\n", container->devnm);
+	}
+
 	for ( ; mdstat ; mdstat = mdstat->next) {
 		struct active_array *a;
 		if (strcmp(mdstat->devnm, container->devnm) == 0) {
-			manage_container(mdstat, container);
+			if (member_found)
+				manage_container(mdstat, container);
 			continue;
 		}
 		if (!is_container_member(mdstat, container->devnm))

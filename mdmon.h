@@ -76,6 +76,7 @@ void remove_pidfile(char *devname);
 void do_monitor(struct supertype *container);
 void do_manager(struct supertype *container);
 extern int sigterm;
+extern int array_stopping;
 
 int read_dev_state(int fd);
 int is_container_member(struct mdstat_ent *mdstat, char *container);
