@@ -468,7 +468,7 @@ static void manage_container(struct mdstat_ent *mdstat,
 	// do not act.
 	if (array_stopping) {
 		dprintf("array stopping; avoiding container "
-			"membership changes");
+			"membership changes\n");
 		return;
 	}
 
@@ -1087,7 +1087,7 @@ void do_manager(struct supertype *container)
 		 * update_queue
 		 */
 		if (update_queue == NULL) {
-			mdstat = mdstat_read_ex(1, 0, 1);
+			mdstat = mdstat_read(1, 0);
 
 			manage(mdstat, container);
 
