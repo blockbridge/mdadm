@@ -617,6 +617,34 @@ static void _ddf_set_update_member_seq(struct ddf_super *ddf, const char *func)
 
 #define ddf_set_update_member_seq(x) _ddf_set_update_member_seq((x), __func__)
 
+// Immediately after assembly, the array enters auto-read-only.  The first time
+// it's written after that, we update the assembly sequence number.
+//
+// There is a rare potential failure mode where a partitioned system makes
+// slight forward progress on one drive, incrementing its sequence number by
+// one or two.  Then, the system is fenced and started on the other cluster
+// member.  If it should only run for a minute or so there before failing back
+// over, there's a chance that the sequence number of the drive on the
+// once-partitioned system is high enough that it meets the minimum assembly
+// sequence number.
+//
+// The function below wrenches the sequence number forward significantly after
+// assembly to prevent re-assembly with drives from partitioned systems.
+#define DDF_POST_ASSEMBLE_SEQ_INC 16
+static void _ddf_set_post_assemble_seq(struct ddf_super *ddf, const char *func)
+{
+	static int once = 0;
+	if (!once) {
+		ddf->updates_pending = 1;
+		ddf->active->seq = cpu_to_be32((be32_to_cpu(ddf->active->seq)+DDF_POST_ASSEMBLE_SEQ_INC));
+		once = 1;
+	}
+	pr_state(ddf, func);
+	_ddf_set_update_assembly_seq(ddf, func);
+}
+
+#define ddf_set_post_assemble_seq(x) _ddf_set_post_assemble_seq((x), __func__)
+
 static be32 calc_crc(void *buf, int len)
 {
 	/* crcs are always at the same place as in the ddf_header */
@@ -1674,6 +1702,8 @@ static void examine_vd(int n, struct ddf_super *sb, char *guid)
 		       be64_to_cpu(vc->blocks)/2);
 		printf("   Array Size[%d] : %llu\n", n,
 		       be64_to_cpu(vc->array_blocks)/2);
+		printf("       Seqnum[%d] : %u\n", n,
+		       be32_to_cpu(vc->seqnum));
 	}
 }
 
@@ -3566,6 +3596,20 @@ static int __write_init_super_ddf(struct supertype *st, int *enough_out)
 
 	pr_state(ddf, __func__);
 
+	// If we're synchronizing with mdvote, query it up front to check
+	// for availability before writing the superblocks.  A "not found"
+	// is acceptable here, as it's a confirmation that mdvote is
+	// reachable.
+	if (ddf->mdvote_assembly_update || ddf->mdvote_member_update) {
+		int64_t seq = ddf_get_assembly_seq(st);
+		if (seq < 0 && seq != -ENOENT) {
+			not_all = 1;
+			enough = 0;
+			pr_err("MDVOTE UNREACHABLE; seq:%ld\n", seq);
+			goto out;
+		}
+	}
+
 	/* Try to write updated metadata, if we catch a failure move
 	 * on to the next disk.  Record whether each disk succeded as
 	 * "op_ok".
@@ -3641,6 +3685,7 @@ static int __write_init_super_ddf(struct supertype *st, int *enough_out)
 		}
 	}
 
+out:
 	if (enough_out)
 		*enough_out = enough;
 
@@ -4763,7 +4808,7 @@ static int ddf_set_array_state(struct active_array *a, int consistent)
 	// readonly mode to read/write.
 	if ((a->curr_state == write_pending || a->curr_state == active) &&
 	    (a->prev_state == read_auto     || a->prev_state == readonly)) {
-		ddf_set_update_assembly_seq(ddf);
+		ddf_set_post_assemble_seq(ddf);
 	}
 
 	if (consistent == 2) {
